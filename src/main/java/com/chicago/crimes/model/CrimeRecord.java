@@ -1,5 +1,6 @@
 package com.chicago.crimes.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -77,15 +78,15 @@ public class CrimeRecord {
     public Double getLongitude() { return longitude; }
     public void setLongitude(Double longitude) { this.longitude = longitude; }
 
-    // Pomocnicze metody
+    @JsonIgnore
     public LocalDateTime getDateTime() {
         try {
-            return LocalDateTime.parse(date, DateTimeFormatter.ofPattern("MM/dd/yyyy hh:mm:ss a"));
+            return LocalDateTime.parse(date, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"));
         } catch (Exception e) {
             return LocalDateTime.now();
         }
     }
-
+    @JsonIgnore
     public String getYearMonth() {
         return getDateTime().format(DateTimeFormatter.ofPattern("yyyy-MM"));
     }

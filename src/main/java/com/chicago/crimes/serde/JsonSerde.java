@@ -1,7 +1,6 @@
 package com.chicago.crimes.serde;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.kafka.common.serialization.Deserializer;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serializer;
@@ -11,9 +10,9 @@ import java.util.Map;
 public class JsonSerde<T> implements Serde<T> {
     public static final ObjectMapper objectMapper = new ObjectMapper();
 
-    static {
-        objectMapper.registerModule(new JavaTimeModule());
-    }
+//    static {
+//        objectMapper.registerModule(new JavaTimeModule());
+//    }
 
     private final Class<T> clazz;
 

@@ -104,7 +104,7 @@ public class ChicagoCrimesStreamsApp {
                 .aggregate(
                         () -> new CrimeAggregate(),
                         (key, crime, aggregate) -> {
-                            String[] keyParts = key.split("_");
+                            String[] keyParts = key.split("_", 3);
                             if (aggregate.getYearMonth() == null) {
                                 aggregate.setYearMonth(keyParts[0]);
                                 aggregate.setPrimaryDescription(keyParts[1]);

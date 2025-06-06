@@ -2,6 +2,8 @@ package com.chicago.crimes.producer;
 
 import com.chicago.crimes.model.CrimeRecord;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.fasterxml.jackson.dataformat.csv.CsvMapper;
 import com.fasterxml.jackson.dataformat.csv.CsvSchema;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -16,7 +18,16 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public class CrimesDataProducer {
     private static final String TOPIC = "crimes-input";
-    private static final ObjectMapper JSON_MAPPER = new ObjectMapper();
+
+    // POPRAWIONY OBJECTMAPPER
+    private static final ObjectMapper JSON_MAPPER = createObjectMapper();
+
+    private static ObjectMapper createObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+//        mapper.registerModule(new JavaTimeModule());
+//        mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        return mapper;
+    }
 
     public static void main(String[] args) throws Exception {
         if (args.length < 3) {
@@ -50,7 +61,7 @@ public class CrimesDataProducer {
             while (iterator.hasNext()) {
                 CrimeRecord crime = iterator.next();
 
-                // Symulacja opóźnień (dane mogą być nieuporządkowane)
+                // Symulacja opóźnień
                 if (ThreadLocalRandom.current().nextDouble() < 0.1) {
                     Thread.sleep(ThreadLocalRandom.current().nextLong(1000, 5000));
                 }
