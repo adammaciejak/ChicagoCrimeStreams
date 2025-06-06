@@ -5,11 +5,11 @@ import com.chicago.crimes.serde.JsonSerde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.*;
 import org.apache.kafka.streams.kstream.*;
-import org.apache.kafka.streams.state.WindowStore;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.time.Duration;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -24,18 +24,19 @@ public class ChicagoCrimesStreamsApp {
     private static Map<String, IucrCode> iucrCodes = new HashMap<>();
 
     public static void main(String[] args) {
-        if (args.length < 3) {
-            System.err.println("Usage: java ChicagoCrimesStreamsApp <bootstrap-servers> <anomaly-days> <anomaly-percentage> [delay-mode]");
+        if (args.length < 4) { // POPRAWKA: Dodano parametr dla pliku IUCR
+            System.err.println("Usage: java ChicagoCrimesStreamsApp <bootstrap-servers> <anomaly-days> <anomaly-percentage> <delay-mode> [iucr-csv-path]");
             System.exit(1);
         }
 
         String bootstrapServers = args[0];
         int anomalyDays = Integer.parseInt(args[1]);
         double anomalyPercentage = Double.parseDouble(args[2]);
-        String delayMode = args.length > 3 ? args[3] : "A"; // A lub C
+        String delayMode = args[3];
+        String iucrCsvPath = args.length > 4 ? args[4] : "Chicago_Police_Department_-_Illinois_Uniform_Crime_Reporting__IUCR__Codes.csv";
 
-        // Załaduj kody IUCR (w rzeczywistej aplikacji z pliku)
-        loadIucrCodes();
+        // POPRAWKA: Załaduj kody IUCR z rzeczywistego pliku
+        loadIucrCodes(iucrCsvPath);
 
         Properties props = createProperties(bootstrapServers, delayMode);
         StreamsBuilder builder = new StreamsBuilder();
@@ -44,7 +45,6 @@ public class ChicagoCrimesStreamsApp {
 
         KafkaStreams streams = new KafkaStreams(builder.build(), props);
 
-        // Dodaj shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Shutting down Chicago Crimes Streams App...");
             streams.close(Duration.ofSeconds(10));
@@ -62,13 +62,12 @@ public class ChicagoCrimesStreamsApp {
         props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.String().getClass());
         props.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.String().getClass());
+        props.put(StreamsConfig.DEFAULT_TIMESTAMP_EXTRACTOR_CLASS_CONFIG,
+                com.chicago.crimes.extractor.CrimeTimestampExtractor.class);
 
-        // Konfiguracja opóźnień w zależności od trybu
         if ("A".equals(delayMode)) {
-            // Tryb A - minimalne opóźnienie, wyniki mogą być niepełne
             props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);
         } else {
-            // Tryb C - wyniki ostateczne, większe opóźnienie
             props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 30000);
         }
 
@@ -76,18 +75,13 @@ public class ChicagoCrimesStreamsApp {
     }
 
     private static void buildTopology(StreamsBuilder builder, int anomalyDays, double anomalyPercentage) {
-        // 1. Strumień danych wejściowych
         KStream<String, String> crimeEvents = builder.stream(INPUT_TOPIC);
 
-        // 2. Parsowanie danych JSON
         KStream<String, CrimeRecord> parsedCrimes = crimeEvents
                 .mapValues(json -> parseJson(json, CrimeRecord.class))
                 .filter((key, crime) -> crime != null && crime.getDistrict() != null);
 
-        // 3. ETL - Agregacje miesięczne
         buildMonthlyAggregates(parsedCrimes);
-
-        // 4. Wykrywanie anomalii
         buildAnomalyDetection(parsedCrimes, anomalyDays, anomalyPercentage);
     }
 
@@ -104,7 +98,7 @@ public class ChicagoCrimesStreamsApp {
                 .aggregate(
                         () -> new CrimeAggregate(),
                         (key, crime, aggregate) -> {
-                            String[] keyParts = key.split("_", 3);
+                            String[] keyParts = key.split("_", 3); // POPRAWKA: Limit split na 3 części
                             if (aggregate.getYearMonth() == null) {
                                 aggregate.setYearMonth(keyParts[0]);
                                 aggregate.setPrimaryDescription(keyParts[1]);
@@ -154,7 +148,50 @@ public class ChicagoCrimesStreamsApp {
                 .to(ANOMALIES_TOPIC, Produced.with(Serdes.String(), new JsonSerde<>(AnomalyAlert.class)));
     }
 
-    // Pomocnicze klasy i metody
+    // POPRAWKA: Rzeczywiste ładowanie z pliku CSV
+    private static void loadIucrCodes(String csvFile) {
+        try (BufferedReader br = new BufferedReader(new FileReader(csvFile))) {
+            String line;
+            boolean firstLine = true;
+
+            while ((line = br.readLine()) != null) {
+                if (firstLine) {
+                    firstLine = false;
+                    continue; // Pomiń nagłówek
+                }
+
+                String[] values = parseCSVLine(line);
+                if (values.length >= 4) {
+                    String iucr = values[0].trim();
+                    if (iucr.matches("\\d+")) { // Sprawdź czy to są tylko cyfry
+                        iucr = String.format("%04d", Integer.parseInt(iucr));
+                    }
+                    String primaryDescription = values[1].trim();
+                    String secondaryDescription = values[2].trim();
+                    String indexCode = values[3].trim();
+
+                    iucrCodes.put(iucr, new IucrCode(iucr, primaryDescription, secondaryDescription, indexCode));
+                }
+            }
+
+            System.out.println("Załadowano " + iucrCodes.size() + " kodów IUCR");
+
+        } catch (IOException e) {
+            System.err.println("Błąd ładowania kodów IUCR: " + e.getMessage());
+            // loadBasicIucrCodes(); // Fallback
+        }
+    }
+
+    // POPRAWKA: Dodano fallback dla podstawowych kodów
+    private static void loadBasicIucrCodes() {
+        iucrCodes.put("110", new IucrCode("110", "HOMICIDE", "FIRST DEGREE MURDER", "I"));
+        iucrCodes.put("130", new IucrCode("130", "HOMICIDE", "SECOND DEGREE MURDER", "I"));
+        iucrCodes.put("261", new IucrCode("261", "CRIM SEXUAL ASSAULT", "AGG CRIMINAL SEXUAL ASSAULT", "I"));
+        iucrCodes.put("486", new IucrCode("486", "BATTERY", "DOMESTIC BATTERY SIMPLE", "N"));
+        System.out.println("Załadowano podstawowe kody IUCR (fallback)");
+    }
+
+    // Pozostałe metody pomocnicze...
     private static <T> T parseJson(String json, Class<T> clazz) {
         try {
             return JsonSerde.objectMapper.readValue(json, clazz);
@@ -164,13 +201,9 @@ public class ChicagoCrimesStreamsApp {
         }
     }
 
-    private static void loadIucrCodes() {
-        // Przykładowe kody IUCR - w rzeczywistej aplikacji załaduj z pliku CSV
-        iucrCodes.put("0110", new IucrCode("0110", "HOMICIDE", "FIRST DEGREE MURDER", "I"));
-        iucrCodes.put("0130", new IucrCode("0130", "HOMICIDE", "SECOND DEGREE MURDER", "I"));
-        iucrCodes.put("0261", new IucrCode("0261", "CRIM SEXUAL ASSAULT", "AGG CRIMINAL SEXUAL ASSAULT", "I"));
-        iucrCodes.put("0486", new IucrCode("0486", "BATTERY", "DOMESTIC BATTERY SIMPLE", "N"));
-        // Dodaj więcej kodów...
+    private static String[] parseCSVLine(String line) {
+        // Prosta implementacja - można ulepszyć obsługę cudzysłowów
+        return line.split(",");
     }
 
     private static String getIucrPrimaryDescription(String iucr) {
@@ -183,7 +216,7 @@ public class ChicagoCrimesStreamsApp {
         return code != null && "I".equals(code.getIndexCode());
     }
 
-    // Klasa pomocnicza dla agregacji anomalii
+    // Klasy pomocnicze
     public static class DistrictCrimeCounts {
         private long totalCrimes = 0;
         private long fbiIndexCrimes = 0;
@@ -195,7 +228,6 @@ public class ChicagoCrimesStreamsApp {
         public long getFbiIndexCrimes() { return fbiIndexCrimes; }
     }
 
-    // Klasa dla kodów IUCR
     public static class IucrCode {
         private String iucr;
         private String primaryDescription;
@@ -209,7 +241,6 @@ public class ChicagoCrimesStreamsApp {
             this.indexCode = indexCode;
         }
 
-        // Gettery
         public String getIucr() { return iucr; }
         public String getPrimaryDescription() { return primaryDescription; }
         public String getSecondaryDescription() { return secondaryDescription; }
