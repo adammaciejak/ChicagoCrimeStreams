@@ -41,7 +41,7 @@ public class ChicagoCrimesStreamsApp {
         Properties props = createProperties(bootstrapServers, delayMode);
         StreamsBuilder builder = new StreamsBuilder();
 
-        buildTopology(builder, anomalyDays, anomalyPercentage);
+        buildTopology(builder, anomalyDays, anomalyPercentage, delayMode);
 
         KafkaStreams streams = new KafkaStreams(builder.build(), props);
 
@@ -65,59 +65,69 @@ public class ChicagoCrimesStreamsApp {
         props.put(StreamsConfig.DEFAULT_TIMESTAMP_EXTRACTOR_CLASS_CONFIG,
                 com.chicago.crimes.extractor.CrimeTimestampExtractor.class);
 
-        if ("A".equals(delayMode)) {
-            props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);
-        } else {
-            props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 30000);
-        }
-
         return props;
     }
 
-    private static void buildTopology(StreamsBuilder builder, int anomalyDays, double anomalyPercentage) {
+    private static Suppressed<Windowed> getSuppressStrategy(String delayMode) {
+        if ("A".equals(delayMode)) {
+            return Suppressed.untilTimeLimit(Duration.ZERO, Suppressed.BufferConfig.unbounded());
+        } else {
+            return Suppressed.untilWindowCloses(Suppressed.BufferConfig.unbounded());
+        }
+    }
+
+    private static void buildTopology(StreamsBuilder builder, int anomalyDays, double anomalyPercentage, String delayMode) {
         KStream<String, String> crimeEvents = builder.stream(INPUT_TOPIC);
 
         KStream<String, CrimeRecord> parsedCrimes = crimeEvents
                 .mapValues(json -> parseJson(json, CrimeRecord.class))
                 .filter((key, crime) -> crime != null && crime.getDistrict() != null);
 
-        buildMonthlyAggregates(parsedCrimes);
-        buildAnomalyDetection(parsedCrimes, anomalyDays, anomalyPercentage);
+        buildMonthlyAggregates(parsedCrimes, delayMode);
+        buildAnomalyDetection(parsedCrimes, anomalyDays, anomalyPercentage, delayMode);
     }
 
-    private static void buildMonthlyAggregates(KStream<String, CrimeRecord> crimes) {
+    private static void buildMonthlyAggregates(KStream<String, CrimeRecord> crimes, String delayMode) {
         crimes
                 .map((key, crime) -> {
-                    String aggregateKey = String.format("%s_%s_%s",
-                            crime.getYearMonth(),
+                    String aggregateKey = String.format("%s_%s",
                             getIucrPrimaryDescription(crime.getIucr()),
                             crime.getDistrict());
                     return KeyValue.pair(aggregateKey, crime);
                 })
                 .groupByKey(Grouped.with(Serdes.String(), new JsonSerde<>(CrimeRecord.class)))
+                .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofDays(30), Duration.ofDays(1)))
                 .aggregate(
                         () -> new CrimeAggregate(),
                         (key, crime, aggregate) -> {
-                            String[] keyParts = key.split("_", 3); // POPRAWKA: Limit split na 3 części
+                            String[] keyParts = key.split("_", 2);
                             if (aggregate.getYearMonth() == null) {
-                                aggregate.setYearMonth(keyParts[0]);
-                                aggregate.setPrimaryDescription(keyParts[1]);
-                                aggregate.setDistrict(keyParts[2]);
+                                aggregate.setYearMonth(crime.getYearMonth());
+                                aggregate.setPrimaryDescription(keyParts[0]);
+                                aggregate.setDistrict(keyParts[1]);
                             }
                             boolean isFbiIndex = isIucrFbiIndex(crime.getIucr());
                             return aggregate.update(crime, isFbiIndex);
                         },
                         Materialized.with(Serdes.String(), new JsonSerde<>(CrimeAggregate.class))
                 )
+                .suppress(getSuppressStrategy(delayMode))
                 .toStream()
+                .map((windowedKey, aggregate) -> {
+                    String outputKey = String.format("%s_%s_%s",
+                            aggregate.getYearMonth(),
+                            aggregate.getPrimaryDescription(),
+                            aggregate.getDistrict());
+                    return KeyValue.pair(outputKey, aggregate);
+                })
                 .to(AGGREGATES_TOPIC, Produced.with(Serdes.String(), new JsonSerde<>(CrimeAggregate.class)));
     }
 
-    private static void buildAnomalyDetection(KStream<String, CrimeRecord> crimes, int days, double threshold) {
+    private static void buildAnomalyDetection(KStream<String, CrimeRecord> crimes, int days, double threshold, String delayMode) {
         crimes
                 .selectKey((key, crime) -> crime.getDistrict())
                 .groupByKey(Grouped.with(Serdes.String(), new JsonSerde<>(CrimeRecord.class)))
-                .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofDays(days)))
+                .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofDays(days), Duration.ofDays(1)))
                 .aggregate(
                         () -> new DistrictCrimeCounts(),
                         (district, crime, counts) -> {
@@ -129,6 +139,7 @@ public class ChicagoCrimesStreamsApp {
                         },
                         Materialized.with(Serdes.String(), new JsonSerde<>(DistrictCrimeCounts.class))
                 )
+                .suppress(getSuppressStrategy(delayMode))
                 .toStream()
                 .filter((windowedDistrict, counts) -> {
                     double percentage = counts.getTotalCrimes() > 0 ?
@@ -191,7 +202,7 @@ public class ChicagoCrimesStreamsApp {
         System.out.println("Załadowano podstawowe kody IUCR (fallback)");
     }
 
-    // Pozostałe metody pomocnicze...
+    // Metody pomocnicze
     private static <T> T parseJson(String json, Class<T> clazz) {
         try {
             return JsonSerde.objectMapper.readValue(json, clazz);
@@ -216,7 +227,6 @@ public class ChicagoCrimesStreamsApp {
         return code != null && "I".equals(code.getIndexCode());
     }
 
-    // Klasy pomocnicze
     public static class DistrictCrimeCounts {
         private long totalCrimes = 0;
         private long fbiIndexCrimes = 0;
