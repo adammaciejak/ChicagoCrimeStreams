@@ -1,25 +1,32 @@
 #!/bin/bash
 
+echo "=== URUCHAMIANIE PRODUCENTA ==="
+
 if [ $# -lt 2 ]; then
-    echo "Usage: $0 <csv-file-path> <records-per-second>"
+    echo "Użycie: $0 <folder-danych> <rekordy-na-sekundę>"
+    echo "Przykład: $0 /tmp/crimes-in-chicago_result/ 100"
     exit 1
 fi
 
-CSV_FILE=$1
+DATA_FOLDER=$1
 RECORDS_PER_SECOND=$2
-CLUSTER_NAME="broker-1"
-BOOTSTRAP_SERVERS="${CLUSTER_NAME}:19092"
 
-echo "Starting crimes data producer..."
-echo "CSV file: $CSV_FILE"
-echo "Records per second: $RECORDS_PER_SECOND"
+echo "Folder: $DATA_FOLDER, Prędkość: $RECORDS_PER_SECOND rekordów/s"
 
-# Skopiuj plik JAR do kontenera jeśli jeszcze nie istnieje
-docker cp target/chicago-crimes-streams.jar ${CLUSTER_NAME}:/tmp/ 2>/dev/null || true
+# Sprawdź pliki
+if [ ! -d "$DATA_FOLDER" ]; then
+    echo "BŁĄD: Folder $DATA_FOLDER nie istnieje"
+    exit 1
+fi
 
-# Uruchom producera w kontenerze
-docker exec -it ${CLUSTER_NAME} java -cp /opt/kafka/libs/*:/tmp/chicago-crimes-streams.jar \
+if [ ! -f "/tmp/chicago-crimes-streams.jar" ]; then
+    echo "BŁĄD: Brak pliku chicago-crimes-streams.jar"
+    exit 1
+fi
+
+# Uruchom producenta
+java -cp /opt/kafka/libs/*:/tmp/chicago-crimes-streams.jar \
     com.chicago.crimes.producer.CrimesDataProducer \
-    ${BOOTSTRAP_SERVERS} \
-    ${CSV_FILE} \
-    ${RECORDS_PER_SECOND}
+    broker-1:19092 \
+    "$DATA_FOLDER" \
+    "$RECORDS_PER_SECOND"

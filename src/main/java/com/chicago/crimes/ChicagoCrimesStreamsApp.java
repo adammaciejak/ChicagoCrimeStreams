@@ -2,6 +2,7 @@ package com.chicago.crimes;
 
 import com.chicago.crimes.model.*;
 import com.chicago.crimes.serde.JsonSerde;
+import com.chicago.crimes.utils.JsonSchemaUtils;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.*;
 import org.apache.kafka.streams.kstream.*;
@@ -118,9 +119,10 @@ public class ChicagoCrimesStreamsApp {
                             aggregate.getYearMonth(),
                             aggregate.getPrimaryDescription(),
                             aggregate.getDistrict());
-                    return KeyValue.pair(outputKey, aggregate);
+                    String messageWithSchema = JsonSchemaUtils.createAggregateMessage(aggregate, outputKey);
+                    return KeyValue.pair(outputKey, messageWithSchema);
                 })
-                .to(AGGREGATES_TOPIC, Produced.with(Serdes.String(), new JsonSerde<>(CrimeAggregate.class)));
+                .to(AGGREGATES_TOPIC, Produced.with(Serdes.String(), Serdes.String()));
     }
 
     private static void buildAnomalyDetection(KStream<String, CrimeRecord> crimes, int days, double threshold, String delayMode) {
@@ -154,9 +156,10 @@ public class ChicagoCrimesStreamsApp {
                     AnomalyAlert alert = new AnomalyAlert(windowStart, windowEnd, district,
                             counts.getFbiIndexCrimes(), counts.getTotalCrimes());
 
-                    return KeyValue.pair(district, alert);
+                    String messageWithSchema = JsonSchemaUtils.createAnomalyMessage(alert, district);
+                    return KeyValue.pair(district, messageWithSchema);
                 })
-                .to(ANOMALIES_TOPIC, Produced.with(Serdes.String(), new JsonSerde<>(AnomalyAlert.class)));
+                .to(ANOMALIES_TOPIC, Produced.with(Serdes.String(), Serdes.String()));
     }
 
     // POPRAWKA: Rzeczywiste ładowanie z pliku CSV
